@@ -7,7 +7,6 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const { Pool } = pkg;
-
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -20,11 +19,7 @@ const pool = new Pool({
   port: process.env.DB_PORT,
 });
 
-app.get("/", (req, res) => {
-  res.send("API rodando com sucesso!");
-});
-
-// Suporta senhas em texto puro (legado) e bcrypt
+// Suporta senhas bcrypt e texto puro (legado)
 async function verificarSenha(plain, stored) {
   if (stored.startsWith("$2b$") || stored.startsWith("$2a$")) {
     return bcrypt.compare(plain, stored);
@@ -88,7 +83,7 @@ app.patch("/produtos/:id", async (req, res) => {
     const fields = [];
     const values = [];
     let i = 1;
-    if (preco !== undefined) { fields.push(`preco = $${i++}`); values.push(preco); }
+    if (preco      !== undefined) { fields.push(`preco = $${i++}`);      values.push(preco); }
     if (disponivel !== undefined) { fields.push(`disponivel = $${i++}`); values.push(disponivel); }
     if (!fields.length) return res.status(400).json({ error: "Nenhum campo para atualizar" });
     values.push(id);
@@ -103,6 +98,25 @@ app.patch("/produtos/:id", async (req, res) => {
   }
 });
 
+app.delete("/produtos/:id", async (req, res) => {
+  const { id } = req.params;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Remove das ordens antes de deletar o produto
+    await client.query("DELETE FROM itens_pedido WHERE produto_id = $1", [id]);
+    await client.query("DELETE FROM produtos WHERE id = $1", [id]);
+    await client.query("COMMIT");
+    res.json({ message: "Produto removido" });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    res.status(500).json({ error: "Erro no servidor" });
+  } finally {
+    client.release();
+  }
+});
+
 // ─── Filiais ──────────────────────────────────────────────────────────────────
 
 app.get("/filiais", async (req, res) => {
@@ -111,6 +125,22 @@ app.get("/filiais", async (req, res) => {
       "SELECT id, nome, endereco, telefone, ativo FROM filiais ORDER BY nome"
     );
     res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro no servidor" });
+  }
+});
+
+app.get("/filiais/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await pool.query(
+      "SELECT id, nome, endereco, telefone, ativo FROM filiais WHERE id = $1",
+      [id]
+    );
+    if (result.rows.length === 0)
+      return res.status(404).json({ error: "Filial não encontrada" });
+    res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erro no servidor" });
@@ -137,6 +167,9 @@ app.post("/filiais", async (req, res) => {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);
+    if (err.code === "23505") {
+      return res.status(400).json({ error: "Email já cadastrado." });
+    }
     res.status(500).json({ error: "Erro no servidor" });
   } finally {
     client.release();
@@ -145,11 +178,20 @@ app.post("/filiais", async (req, res) => {
 
 app.patch("/filiais/:id", async (req, res) => {
   const { id } = req.params;
-  const { ativo } = req.body;
+  const { ativo, nome, endereco, telefone } = req.body;
   try {
+    const fields = [];
+    const values = [];
+    let i = 1;
+    if (ativo    !== undefined) { fields.push(`ativo = $${i++}`);    values.push(ativo); }
+    if (nome     !== undefined) { fields.push(`nome = $${i++}`);     values.push(nome); }
+    if (endereco !== undefined) { fields.push(`endereco = $${i++}`); values.push(endereco); }
+    if (telefone !== undefined) { fields.push(`telefone = $${i++}`); values.push(telefone); }
+    if (!fields.length) return res.status(400).json({ error: "Nenhum campo para atualizar" });
+    values.push(id);
     const result = await pool.query(
-      "UPDATE filiais SET ativo = $1 WHERE id = $2 RETURNING *",
-      [ativo, id]
+      `UPDATE filiais SET ${fields.join(", ")} WHERE id = $${i} RETURNING *`,
+      values
     );
     res.json(result.rows[0]);
   } catch (err) {
@@ -158,36 +200,72 @@ app.patch("/filiais/:id", async (req, res) => {
   }
 });
 
+app.delete("/filiais/:id", async (req, res) => {
+  const { id } = req.params;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "DELETE FROM itens_pedido WHERE pedido_id IN (SELECT id FROM pedidos WHERE filial_id = $1)",
+      [id]
+    );
+    await client.query("DELETE FROM pedidos WHERE filial_id = $1", [id]);
+    await client.query("DELETE FROM users WHERE filial_id = $1", [id]);
+    await client.query("DELETE FROM filiais WHERE id = $1", [id]);
+    await client.query("COMMIT");
+    res.json({ message: "Filial removida" });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    res.status(500).json({ error: "Erro no servidor" });
+  } finally {
+    client.release();
+  }
+});
+
 // ─── Pedidos ──────────────────────────────────────────────────────────────────
 
 app.get("/pedidos", async (req, res) => {
-  const { filial_id } = req.query;
+  const { filial_id, status, data_inicio, data_fim } = req.query;
   try {
+    const conds  = [];
+    const values = [];
+    let i = 1;
+
+    if (filial_id)   { conds.push(`pe.filial_id = $${i++}`);                  values.push(filial_id); }
+    if (status)      { conds.push(`pe.status = $${i++}`);                     values.push(status); }
+    if (data_inicio) { conds.push(`pe.data_pedido::date >= $${i++}::date`);   values.push(data_inicio); }
+    if (data_fim)    { conds.push(`pe.data_pedido::date <= $${i++}::date`);   values.push(data_fim); }
+
+    const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+
+    const selectItens = `COALESCE(json_agg(
+             json_build_object('nome', p.nome, 'quantidade', ip.quantidade, 'preco', p.preco)
+           ) FILTER (WHERE ip.id IS NOT NULL), '[]') AS itens`;
+
     let result;
     if (filial_id) {
       result = await pool.query(
-        `SELECT pe.id, pe.status, pe.data_pedido,
-           COALESCE(json_agg(json_build_object('nome', p.nome, 'quantidade', ip.quantidade, 'preco', p.preco))
-             FILTER (WHERE ip.id IS NOT NULL), '[]') AS itens
+        `SELECT pe.id, pe.status, pe.data_pedido, ${selectItens}
          FROM pedidos pe
          LEFT JOIN itens_pedido ip ON ip.pedido_id = pe.id
          LEFT JOIN produtos p ON p.id = ip.produto_id
-         WHERE pe.filial_id = $1
+         ${where}
          GROUP BY pe.id
          ORDER BY pe.data_pedido DESC`,
-        [filial_id]
+        values
       );
     } else {
       result = await pool.query(
-        `SELECT pe.id, pe.status, pe.data_pedido, f.nome AS filial_nome,
-           COALESCE(json_agg(json_build_object('nome', p.nome, 'quantidade', ip.quantidade, 'preco', p.preco))
-             FILTER (WHERE ip.id IS NOT NULL), '[]') AS itens
+        `SELECT pe.id, pe.status, pe.data_pedido, f.nome AS filial_nome, ${selectItens}
          FROM pedidos pe
          JOIN filiais f ON f.id = pe.filial_id
          LEFT JOIN itens_pedido ip ON ip.pedido_id = pe.id
          LEFT JOIN produtos p ON p.id = ip.produto_id
+         ${where}
          GROUP BY pe.id, f.nome
-         ORDER BY pe.data_pedido DESC`
+         ORDER BY pe.data_pedido DESC`,
+        values
       );
     }
     res.json(result.rows);
@@ -242,49 +320,60 @@ app.patch("/pedidos/:id/status", async (req, res) => {
 // ─── Relatórios ───────────────────────────────────────────────────────────────
 
 app.get("/relatorios", async (req, res) => {
+  const data     = req.query.data || new Date().toISOString().split("T")[0];
+  const filialId = req.query.filial_id ? parseInt(req.query.filial_id) : null;
+  const fCond    = filialId ? `AND pe.filial_id = ${filialId}` : "";
+
   try {
     const [totaisRes, porFilialRes, topProdutosRes, faturamentoRes] = await Promise.all([
-      pool.query(`
-        SELECT
-          COUNT(*) FILTER (WHERE data_pedido::date = CURRENT_DATE) AS "totalHoje",
-          COUNT(*) FILTER (WHERE data_pedido::date = CURRENT_DATE AND status = 'Entregue') AS "entreguesHoje"
-        FROM pedidos
-      `),
-      pool.query(`
-        SELECT f.nome,
-          COUNT(pe.id) FILTER (WHERE pe.data_pedido::date = CURRENT_DATE) AS pedidos,
-          COALESCE(SUM(ip.quantidade) FILTER (WHERE pe.data_pedido::date = CURRENT_DATE), 0) AS itens,
-          COALESCE(SUM(p.preco * ip.quantidade) FILTER (WHERE pe.data_pedido::date = CURRENT_DATE), 0) AS total
-        FROM filiais f
-        LEFT JOIN pedidos pe ON pe.filial_id = f.id
-        LEFT JOIN itens_pedido ip ON ip.pedido_id = pe.id
-        LEFT JOIN produtos p ON p.id = ip.produto_id
-        GROUP BY f.id, f.nome
-        ORDER BY f.nome
-      `),
-      pool.query(`
-        SELECT p.nome, COUNT(ip.id) AS pedidos
-        FROM produtos p
-        JOIN itens_pedido ip ON ip.produto_id = p.id
-        GROUP BY p.id, p.nome
-        ORDER BY pedidos DESC
-        LIMIT 5
-      `),
-      pool.query(`
-        SELECT COALESCE(SUM(p.preco * ip.quantidade), 0) AS faturamento
-        FROM pedidos pe
-        JOIN itens_pedido ip ON ip.pedido_id = pe.id
-        JOIN produtos p ON p.id = ip.produto_id
-        WHERE pe.data_pedido::date = CURRENT_DATE
-      `),
+      pool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE pe.data_pedido::date = $1::date ${fCond}) AS "totalHoje",
+           COUNT(*) FILTER (WHERE pe.data_pedido::date = $1::date AND pe.status = 'Entregue' ${fCond}) AS "entreguesHoje"
+         FROM pedidos pe`,
+        [data]
+      ),
+      pool.query(
+        `SELECT f.nome,
+           COUNT(pe.id)                FILTER (WHERE pe.data_pedido::date = $1::date ${fCond}) AS pedidos,
+           COALESCE(SUM(ip.quantidade) FILTER (WHERE pe.data_pedido::date = $1::date ${fCond}), 0) AS itens,
+           COALESCE(SUM(p.preco * ip.quantidade) FILTER (WHERE pe.data_pedido::date = $1::date ${fCond}), 0) AS total
+         FROM filiais f
+         LEFT JOIN pedidos pe ON pe.filial_id = f.id
+         LEFT JOIN itens_pedido ip ON ip.pedido_id = pe.id
+         LEFT JOIN produtos p ON p.id = ip.produto_id
+         ${filialId ? `WHERE f.id = ${filialId}` : ""}
+         GROUP BY f.id, f.nome
+         ORDER BY f.nome`,
+        [data]
+      ),
+      pool.query(
+        `SELECT p.nome, COUNT(ip.id) AS pedidos
+         FROM produtos p
+         JOIN itens_pedido ip ON ip.produto_id = p.id
+         JOIN pedidos pe ON pe.id = ip.pedido_id
+         WHERE pe.data_pedido::date = $1::date ${fCond}
+         GROUP BY p.id, p.nome
+         ORDER BY pedidos DESC
+         LIMIT 5`,
+        [data]
+      ),
+      pool.query(
+        `SELECT COALESCE(SUM(p.preco * ip.quantidade), 0) AS faturamento
+         FROM pedidos pe
+         JOIN itens_pedido ip ON ip.pedido_id = pe.id
+         JOIN produtos p ON p.id = ip.produto_id
+         WHERE pe.data_pedido::date = $1::date ${fCond}`,
+        [data]
+      ),
     ]);
 
     res.json({
-      totalHoje: totaisRes.rows[0].totalHoje,
-      entreguesHoje: totaisRes.rows[0].entreguesHoje,
+      totalHoje:       totaisRes.rows[0].totalHoje,
+      entreguesHoje:   totaisRes.rows[0].entreguesHoje,
       faturamentoHoje: faturamentoRes.rows[0].faturamento,
-      porFilial: porFilialRes.rows,
-      topProdutos: topProdutosRes.rows,
+      porFilial:       porFilialRes.rows,
+      topProdutos:     topProdutosRes.rows,
     });
   } catch (err) {
     console.error(err);
@@ -301,7 +390,8 @@ app.get("/perfil/:id", async (req, res) => {
       "SELECT id, nome, email, tipo, filial_id FROM users WHERE id = $1",
       [id]
     );
-    if (result.rows.length === 0) return res.status(404).json({ error: "Usuário não encontrado" });
+    if (result.rows.length === 0)
+      return res.status(404).json({ error: "Usuário não encontrado" });
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
@@ -329,7 +419,8 @@ app.patch("/perfil/:id/senha", async (req, res) => {
   const { senhaAtual, novaSenha } = req.body;
   try {
     const result = await pool.query("SELECT senha FROM users WHERE id = $1", [id]);
-    if (result.rows.length === 0) return res.status(404).json({ error: "Usuário não encontrado" });
+    if (result.rows.length === 0)
+      return res.status(404).json({ error: "Usuário não encontrado" });
     if (!(await verificarSenha(senhaAtual, result.rows[0].senha)))
       return res.status(400).json({ error: "Senha atual incorreta" });
     const hash = await bcrypt.hash(novaSenha, 10);
@@ -341,6 +432,6 @@ app.patch("/perfil/:id/senha", async (req, res) => {
   }
 });
 
-app.listen(3000, () => {
-  console.log("Servidor rodando na porta 3000 🚀");
-});
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.listen(3000, () => console.log("Servidor rodando na porta 3000 🚀"));
