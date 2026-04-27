@@ -79,7 +79,7 @@ function Confirm({ mensagem, onConfirm, onCancel }) {
 // ─── Utilidades ───────────────────────────────────────────────────────────────
 
 function numPedido(id)  { return String(id).padStart(3, "0"); }
-function calcTotal(its) { return (its || []).reduce((a, i) => a + Number(i.preco) * i.quantidade, 0); }
+function calcTotal(its) { return (its || []).reduce((a, i) => a + Number(i.preco_unitario ?? i.preco) * i.quantidade, 0); }
 function resumoItens(its) { return (its || []).map((i) => `${i.nome} ×${i.quantidade}`).join(", ") || "—"; }
 
 // ─── FILIAL: Fazer Pedido ─────────────────────────────────────────────────────
@@ -254,6 +254,9 @@ function MeusPedidos() {
                 <div className="flex items-center gap-2 flex-wrap">
                   <p className="text-zinc-100 font-semibold">Pedido #{numPedido(p.id)}</p>
                   <Badge status={p.status} />
+                  <span className={`text-xs px-2.5 py-1 rounded-full font-medium whitespace-nowrap ${(p.status_pagamento || "Pendente") === "Pago" ? "bg-green-900 text-green-300" : "bg-yellow-900 text-yellow-300"}`}>
+                    {p.status_pagamento || "Pendente"}
+                  </span>
                 </div>
                 <span className="text-zinc-500 text-xs">{new Date(p.data_pedido).toLocaleString("pt-BR")}</span>
               </div>
@@ -344,11 +347,12 @@ function AcompanharStatus() {
 
 function PedidosAdmin() {
   const [pedidos, setPedidos]           = useState([]);
-  const [filtroFilial, setFiltroFilial] = useState("Todas");
-  const [filtroStatus, setFiltroStatus] = useState("Todos");
-  const [filtroData, setFiltroData]     = useState("");
-  const [loading, setLoading]           = useState(true);
-  const [erro, setErro]                 = useState("");
+  const [filtroFilial, setFiltroFilial]       = useState("Todas");
+  const [filtroStatus, setFiltroStatus]       = useState("Todos");
+  const [filtroPagamento, setFiltroPagamento] = useState("Todos");
+  const [filtroData, setFiltroData]           = useState("");
+  const [loading, setLoading]                 = useState(true);
+  const [erro, setErro]                       = useState("");
 
   const carregar = () =>
     fetch("/api/pedidos")
@@ -367,9 +371,21 @@ function PedidosAdmin() {
   const lista = pedidos.filter((p) => {
     if (filtroFilial !== "Todas" && p.filial_nome !== filtroFilial) return false;
     if (filtroStatus !== "Todos" && p.status !== filtroStatus) return false;
+    if (filtroPagamento !== "Todos" && (p.status_pagamento || "Pendente") !== filtroPagamento) return false;
     if (filtroData && new Date(p.data_pedido).toISOString().split("T")[0] !== filtroData) return false;
     return true;
   });
+
+  const atualizarPagamento = async (id, status_pagamento) => {
+    try {
+      const res = await fetch(`/api/pedidos/${id}/pagamento`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status_pagamento }),
+      });
+      if (!res.ok) throw new Error();
+      setPedidos((prev) => prev.map((p) => p.id === id ? { ...p, status_pagamento } : p));
+    } catch { setErro("Erro ao atualizar pagamento."); }
+  };
 
   const atualizarStatus = async (id, status) => {
     setErro("");
@@ -401,6 +417,11 @@ function PedidosAdmin() {
           <option>Todos</option>
           {STATUS_OPCOES.map((s) => <option key={s}>{s}</option>)}
         </select>
+        <select value={filtroPagamento} onChange={(e) => setFiltroPagamento(e.target.value)} className={INPUT_BASE + " w-full sm:w-auto"}>
+          <option>Todos</option>
+          <option>Pendente</option>
+          <option>Pago</option>
+        </select>
         <input type="date" value={filtroData} max={hoje()} onChange={(e) => setFiltroData(e.target.value)}
           className={INPUT_BASE + " w-full sm:w-auto"} />
         {filtroData && (
@@ -422,6 +443,9 @@ function PedidosAdmin() {
                       <p className="text-zinc-100 font-semibold">#{numPedido(p.id)}</p>
                       <p className="text-zinc-400 text-sm">{p.filial_nome}</p>
                       <Badge status={p.status} />
+                      <span className={`text-xs px-2.5 py-1 rounded-full font-medium whitespace-nowrap ${(p.status_pagamento || "Pendente") === "Pago" ? "bg-green-900 text-green-300" : "bg-yellow-900 text-yellow-300"}`}>
+                        {p.status_pagamento || "Pendente"}
+                      </span>
                     </div>
                     <p className="text-zinc-500 text-sm break-words">{resumoItens(p.itens)}</p>
                     <div className="flex items-center gap-3 text-xs text-zinc-500">
@@ -429,10 +453,17 @@ function PedidosAdmin() {
                       <span className="text-orange-400 font-semibold text-sm">R$ {calcTotal(p.itens).toFixed(2)}</span>
                     </div>
                   </div>
-                  <select value={p.status} onChange={(e) => atualizarStatus(p.id, e.target.value)}
-                    className={INPUT_BASE + " w-full sm:w-48 shrink-0 cursor-pointer"}>
-                    {STATUS_OPCOES.map((s) => <option key={s}>{s}</option>)}
-                  </select>
+                  <div className="flex flex-col sm:flex-row gap-2 shrink-0">
+                    <button
+                      onClick={() => atualizarPagamento(p.id, (p.status_pagamento || "Pendente") === "Pago" ? "Pendente" : "Pago")}
+                      className={`text-xs rounded-lg px-3 py-2 font-medium transition cursor-pointer whitespace-nowrap ${(p.status_pagamento || "Pendente") === "Pago" ? "bg-zinc-700 hover:bg-zinc-600 text-zinc-300" : "bg-green-900 hover:bg-green-800 text-green-300"}`}>
+                      {(p.status_pagamento || "Pendente") === "Pago" ? "Estornar" : "Marcar como Pago"}
+                    </button>
+                    <select value={p.status} onChange={(e) => atualizarStatus(p.id, e.target.value)}
+                      className={INPUT_BASE + " w-full sm:w-44 cursor-pointer"}>
+                      {STATUS_OPCOES.map((s) => <option key={s}>{s}</option>)}
+                    </select>
+                  </div>
                 </div>
               </div>
             );
@@ -627,9 +658,10 @@ function Produtos() {
   const [produtos, setProdutos]           = useState([]);
   const [loading, setLoading]             = useState(true);
   const [mostrarForm, setMostrarForm]     = useState(false);
-  const [form, setForm]                   = useState({ nome: "", preco: "" });
+  const [form, setForm]                   = useState({ nome: "", custo: "", margem: "0" });
   const [editandoPreco, setEditandoPreco] = useState(null);
-  const [novoPreco, setNovoPreco]         = useState("");
+  const [editCusto, setEditCusto]         = useState("");
+  const [editMargem, setEditMargem]       = useState("");
   const [confirm, setConfirm]             = useState(null);
   const [erro, setErro]                   = useState("");
   const [sucesso, setSucesso]             = useState("");
@@ -645,18 +677,25 @@ function Produtos() {
       .catch(() => { setErro("Erro ao carregar produtos."); setLoading(false); });
   }, []);
 
+  const precoPreview = (c, m) => {
+    const cv = parseFloat(c);
+    const mv = parseFloat(m) || 0;
+    if (!cv || isNaN(cv)) return null;
+    return (cv * (1 + mv / 100)).toFixed(2);
+  };
+
   const adicionar = async () => {
-    if (!form.nome || !form.preco) { setErro("Nome e preço são obrigatórios."); return; }
+    if (!form.nome || !form.custo) { setErro("Nome e custo são obrigatórios."); return; }
     setErro("");
     try {
       const res = await fetch("/api/produtos", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nome: form.nome, preco: parseFloat(form.preco) }),
+        body: JSON.stringify({ nome: form.nome, custo: parseFloat(form.custo), margem: parseFloat(form.margem) || 0 }),
       });
       if (!res.ok) throw new Error();
       const novo = await res.json();
       setProdutos((prev) => [...prev, novo]);
-      setForm({ nome: "", preco: "" }); setMostrarForm(false);
+      setForm({ nome: "", custo: "", margem: "0" }); setMostrarForm(false);
       flash(setSucesso, "Produto criado!");
     } catch { setErro("Erro ao criar produto."); }
   };
@@ -666,10 +705,11 @@ function Produtos() {
     try {
       const res = await fetch(`/api/produtos/${id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ preco: parseFloat(novoPreco) }),
+        body: JSON.stringify({ custo: parseFloat(editCusto), margem: parseFloat(editMargem) || 0 }),
       });
       if (!res.ok) throw new Error();
-      setProdutos((prev) => prev.map((p) => p.id === id ? { ...p, preco: parseFloat(novoPreco) } : p));
+      const atualizado = await res.json();
+      setProdutos((prev) => prev.map((p) => p.id === id ? atualizado : p));
       setEditandoPreco(null);
       flash(setSucesso, "Preço atualizado!");
     } catch { setErro("Erro ao atualizar preço."); }
@@ -742,9 +782,16 @@ function Produtos() {
           <div className="flex flex-col sm:flex-row gap-3">
             <input placeholder="Nome do produto" value={form.nome}
               onChange={(e) => setForm({ ...form, nome: e.target.value })} className={INPUT_BASE + " flex-1"} />
-            <input placeholder="Preço (R$)" type="number" min="0" step="0.01" value={form.preco}
-              onChange={(e) => setForm({ ...form, preco: e.target.value })} className={INPUT_BASE + " w-full sm:w-36"} />
+            <input placeholder="Custo (R$)" type="number" min="0" step="0.01" value={form.custo}
+              onChange={(e) => setForm({ ...form, custo: e.target.value })} className={INPUT_BASE + " w-full sm:w-32"} />
+            <input placeholder="Margem (%)" type="number" min="0" step="0.1" value={form.margem}
+              onChange={(e) => setForm({ ...form, margem: e.target.value })} className={INPUT_BASE + " w-full sm:w-32"} />
           </div>
+          {precoPreview(form.custo, form.margem) && (
+            <p className="text-zinc-400 text-sm">
+              Preço para a filial: <span className="text-orange-400 font-semibold">R$ {precoPreview(form.custo, form.margem)}</span>
+            </p>
+          )}
           <div className="flex gap-2 flex-wrap">
             <button onClick={adicionar} className={BTN_PRIMARY}>Salvar</button>
             <button onClick={() => setMostrarForm(false)} className={BTN_SECONDARY}>Cancelar</button>
@@ -759,7 +806,11 @@ function Produtos() {
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-zinc-100 font-semibold truncate">{p.nome}</p>
-                  <p className="text-orange-400 font-semibold mt-0.5">R$ {Number(p.preco).toFixed(2)}</p>
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
+                    <span className="text-zinc-500 text-xs">Custo: <span className="text-zinc-300">R$ {Number(p.custo ?? 0).toFixed(2)}</span></span>
+                    <span className="text-zinc-500 text-xs">Margem: <span className="text-zinc-300">{Number(p.margem ?? 0).toFixed(1)}%</span></span>
+                  </div>
+                  <p className="text-orange-400 font-semibold mt-1">Preço: R$ {Number(p.preco ?? 0).toFixed(2)}</p>
                 </div>
                 <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium shrink-0 ${p.disponivel ? "bg-green-900 text-green-300" : "bg-red-900 text-red-300"}`}>
                   {p.disponivel ? "Disponível" : "Indisponível"}
@@ -767,15 +818,25 @@ function Produtos() {
               </div>
 
               {editandoPreco === p.id ? (
-                <div className="flex gap-2">
-                  <input type="number" defaultValue={p.preco} onChange={(e) => setNovoPreco(e.target.value)}
-                    className={INPUT_BASE + " flex-1"} />
-                  <button onClick={() => salvarPreco(p.id)} className={BTN_PRIMARY + " shrink-0"}>OK</button>
+                <div className="flex flex-col gap-2">
+                  <div className="flex gap-2">
+                    <input type="number" placeholder="Custo (R$)" value={editCusto}
+                      onChange={(e) => setEditCusto(e.target.value)} className={INPUT_BASE + " flex-1"} />
+                    <input type="number" placeholder="Margem (%)" value={editMargem}
+                      onChange={(e) => setEditMargem(e.target.value)} className={INPUT_BASE + " w-24"} />
+                  </div>
+                  {precoPreview(editCusto, editMargem) && (
+                    <p className="text-zinc-400 text-xs">Novo preço: <span className="text-orange-400 font-semibold">R$ {precoPreview(editCusto, editMargem)}</span></p>
+                  )}
+                  <div className="flex gap-2">
+                    <button onClick={() => salvarPreco(p.id)} className={BTN_PRIMARY + " flex-1"}>Salvar</button>
+                    <button onClick={() => setEditandoPreco(null)} className={BTN_SECONDARY}>✕</button>
+                  </div>
                 </div>
               ) : (
-                <button onClick={() => { setEditandoPreco(p.id); setNovoPreco(p.preco); }}
+                <button onClick={() => { setEditandoPreco(p.id); setEditCusto(p.custo ?? ""); setEditMargem(p.margem ?? "0"); }}
                   className="text-zinc-500 hover:text-zinc-300 text-xs text-left transition cursor-pointer">
-                  ✏️ Editar preço
+                  ✏️ Editar custo/margem
                 </button>
               )}
 
@@ -823,10 +884,18 @@ function Relatorios() {
       .catch(() => setLoading(false));
   }, [data, filialId]);
 
+  const fmt = (v) => `R$ ${Number(v).toFixed(2)}`;
+
   const cards = [
-    { label: "Pedidos no dia",     valor: dados ? String(dados.totalHoje) : "—",                          cor: "text-zinc-100"   },
-    { label: "Pedidos entregues",  valor: dados ? String(dados.entreguesHoje) : "—",                      cor: "text-green-400"  },
-    { label: "Faturamento do dia", valor: dados ? `R$ ${Number(dados.faturamentoHoje).toFixed(2)}` : "—", cor: "text-orange-400" },
+    { label: "Pedidos no dia",     valor: dados ? String(dados.totalHoje) : "—",                cor: "text-zinc-100"   },
+    { label: "Pedidos entregues",  valor: dados ? String(dados.entreguesHoje) : "—",            cor: "text-green-400"  },
+    { label: "Vendas do dia",      valor: dados ? fmt(dados.faturamentoHoje) : "—",             cor: "text-orange-400" },
+    { label: "Lucro do dia",       valor: dados ? fmt(dados.lucroHoje) : "—",                   cor: "text-emerald-400" },
+  ];
+
+  const cardsGeral = [
+    { label: "Total de vendas (geral)", valor: dados ? fmt(dados.totalVendas) : "—", cor: "text-orange-400" },
+    { label: "Lucro total (geral)",     valor: dados ? fmt(dados.totalLucro)  : "—", cor: "text-emerald-400" },
   ];
 
   const porFilial   = dados?.porFilial   || [];
@@ -854,11 +923,20 @@ function Relatorios() {
 
       {loading ? <Spinner /> : (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             {cards.map((c) => (
               <div key={c.label} className={`${CARD} p-5`}>
                 <p className="text-zinc-500 text-sm mb-2">{c.label}</p>
-                <p className={`text-2xl font-bold ${c.cor}`}>{c.valor}</p>
+                <p className={`text-xl sm:text-2xl font-bold ${c.cor}`}>{c.valor}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {cardsGeral.map((c) => (
+              <div key={c.label} className={`${CARD} p-5 flex items-center justify-between gap-4`}>
+                <p className="text-zinc-400 text-sm">{c.label}</p>
+                <p className={`text-xl font-bold shrink-0 ${c.cor}`}>{c.valor}</p>
               </div>
             ))}
           </div>
@@ -1166,6 +1244,18 @@ function Dashboard() {
   useEffect(() => {
     if (!user) { navigate("/"); return; }
     document.documentElement.classList.toggle("light-theme", tema === "light");
+
+    if (user.tipo === "FILIAL") {
+      fetch(`/api/filiais/${user.filial_id}`)
+        .then((r) => r.json())
+        .then((filial) => {
+          if (!filial.ativo) {
+            localStorage.removeItem("user");
+            navigate("/");
+          }
+        })
+        .catch(() => {});
+    }
   }, []);
 
   const logout = () => {

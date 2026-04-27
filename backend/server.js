@@ -40,6 +40,12 @@ app.post("/login", async (req, res) => {
     if (!(await verificarSenha(senha, user.senha)))
       return res.status(400).json({ error: "Senha inválida" });
 
+    if (user.tipo === "FILIAL") {
+      const filialRes = await pool.query("SELECT ativo FROM filiais WHERE id = $1", [user.filial_id]);
+      if (!filialRes.rows[0]?.ativo)
+        return res.status(403).json({ error: "Filial desativada. Entre em contato com o administrador." });
+    }
+
     res.json({
       message: "Login realizado com sucesso",
       user: { id: user.id, nome: user.nome, tipo: user.tipo, filial_id: user.filial_id },
@@ -63,11 +69,13 @@ app.get("/produtos", async (req, res) => {
 });
 
 app.post("/produtos", async (req, res) => {
-  const { nome, preco, descricao } = req.body;
+  const { nome, descricao, custo, margem } = req.body;
   try {
+    const m     = margem ?? 0;
+    const preco = custo != null ? Math.round(custo * (1 + m / 100) * 100) / 100 : null;
     const result = await pool.query(
-      "INSERT INTO produtos (nome, preco, descricao) VALUES ($1, $2, $3) RETURNING *",
-      [nome, preco, descricao || null]
+      "INSERT INTO produtos (nome, descricao, custo, margem, preco) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [nome, descricao || null, custo ?? null, m, preco]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -78,12 +86,24 @@ app.post("/produtos", async (req, res) => {
 
 app.patch("/produtos/:id", async (req, res) => {
   const { id } = req.params;
-  const { preco, disponivel } = req.body;
+  const { disponivel, custo, margem } = req.body;
   try {
     const fields = [];
     const values = [];
     let i = 1;
-    if (preco      !== undefined) { fields.push(`preco = $${i++}`);      values.push(preco); }
+
+    if (custo !== undefined || margem !== undefined) {
+      const cur = await pool.query("SELECT custo, margem FROM produtos WHERE id = $1", [id]);
+      const row = cur.rows[0] || {};
+      const c = custo  !== undefined ? custo  : Number(row.custo  ?? 0);
+      const m = margem !== undefined ? margem : Number(row.margem ?? 0);
+      if (custo  !== undefined) { fields.push(`custo  = $${i++}`); values.push(custo); }
+      if (margem !== undefined) { fields.push(`margem = $${i++}`); values.push(margem); }
+      const novoPreco = Math.round(c * (1 + m / 100) * 100) / 100;
+      fields.push(`preco = $${i++}`);
+      values.push(novoPreco);
+    }
+
     if (disponivel !== undefined) { fields.push(`disponivel = $${i++}`); values.push(disponivel); }
     if (!fields.length) return res.status(400).json({ error: "Nenhum campo para atualizar" });
     values.push(id);
@@ -240,13 +260,13 @@ app.get("/pedidos", async (req, res) => {
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
 
     const selectItens = `COALESCE(json_agg(
-             json_build_object('nome', p.nome, 'quantidade', ip.quantidade, 'preco', p.preco)
+             json_build_object('nome', p.nome, 'quantidade', ip.quantidade, 'preco', p.preco, 'preco_unitario', ip.preco_unitario)
            ) FILTER (WHERE ip.id IS NOT NULL), '[]') AS itens`;
 
     let result;
     if (filial_id) {
       result = await pool.query(
-        `SELECT pe.id, pe.status, pe.data_pedido, ${selectItens}
+        `SELECT pe.id, pe.status, pe.status_pagamento, pe.data_pedido, ${selectItens}
          FROM pedidos pe
          LEFT JOIN itens_pedido ip ON ip.pedido_id = pe.id
          LEFT JOIN produtos p ON p.id = ip.produto_id
@@ -257,7 +277,7 @@ app.get("/pedidos", async (req, res) => {
       );
     } else {
       result = await pool.query(
-        `SELECT pe.id, pe.status, pe.data_pedido, f.nome AS filial_nome, ${selectItens}
+        `SELECT pe.id, pe.status, pe.status_pagamento, pe.data_pedido, f.nome AS filial_nome, ${selectItens}
          FROM pedidos pe
          JOIN filiais f ON f.id = pe.filial_id
          LEFT JOIN itens_pedido ip ON ip.pedido_id = pe.id
@@ -277,6 +297,11 @@ app.get("/pedidos", async (req, res) => {
 
 app.post("/pedidos", async (req, res) => {
   const { filial_id, created_by, itens } = req.body;
+
+  const filialCheck = await pool.query("SELECT ativo FROM filiais WHERE id = $1", [filial_id]);
+  if (!filialCheck.rows[0]?.ativo)
+    return res.status(403).json({ error: "Filial desativada." });
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -286,9 +311,11 @@ app.post("/pedidos", async (req, res) => {
     );
     const pedido = pedidoResult.rows[0];
     for (const item of itens) {
+      const prodRes = await client.query("SELECT preco FROM produtos WHERE id = $1", [item.produto_id]);
+      const preco_unitario = prodRes.rows[0]?.preco ?? null;
       await client.query(
-        "INSERT INTO itens_pedido (pedido_id, produto_id, quantidade) VALUES ($1, $2, $3)",
-        [pedido.id, item.produto_id, item.quantidade]
+        "INSERT INTO itens_pedido (pedido_id, produto_id, quantidade, preco_unitario) VALUES ($1, $2, $3, $4)",
+        [pedido.id, item.produto_id, item.quantidade, preco_unitario]
       );
     }
     await client.query("COMMIT");
@@ -299,6 +326,21 @@ app.post("/pedidos", async (req, res) => {
     res.status(500).json({ error: "Erro no servidor" });
   } finally {
     client.release();
+  }
+});
+
+app.patch("/pedidos/:id/pagamento", async (req, res) => {
+  const { id } = req.params;
+  const { status_pagamento } = req.body;
+  try {
+    const result = await pool.query(
+      "UPDATE pedidos SET status_pagamento = $1 WHERE id = $2 RETURNING *",
+      [status_pagamento, id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erro no servidor" });
   }
 });
 
@@ -325,7 +367,7 @@ app.get("/relatorios", async (req, res) => {
   const fCond    = filialId ? `AND pe.filial_id = ${filialId}` : "";
 
   try {
-    const [totaisRes, porFilialRes, topProdutosRes, faturamentoRes] = await Promise.all([
+    const [totaisRes, porFilialRes, topProdutosRes, faturamentoRes, geralRes] = await Promise.all([
       pool.query(
         `SELECT
            COUNT(*) FILTER (WHERE pe.data_pedido::date = $1::date ${fCond}) AS "totalHoje",
@@ -337,7 +379,7 @@ app.get("/relatorios", async (req, res) => {
         `SELECT f.nome,
            COUNT(pe.id)                FILTER (WHERE pe.data_pedido::date = $1::date ${fCond}) AS pedidos,
            COALESCE(SUM(ip.quantidade) FILTER (WHERE pe.data_pedido::date = $1::date ${fCond}), 0) AS itens,
-           COALESCE(SUM(p.preco * ip.quantidade) FILTER (WHERE pe.data_pedido::date = $1::date ${fCond}), 0) AS total
+           COALESCE(SUM(COALESCE(ip.preco_unitario, p.preco) * ip.quantidade) FILTER (WHERE pe.data_pedido::date = $1::date ${fCond}), 0) AS total
          FROM filiais f
          LEFT JOIN pedidos pe ON pe.filial_id = f.id
          LEFT JOIN itens_pedido ip ON ip.pedido_id = pe.id
@@ -359,12 +401,24 @@ app.get("/relatorios", async (req, res) => {
         [data]
       ),
       pool.query(
-        `SELECT COALESCE(SUM(p.preco * ip.quantidade), 0) AS faturamento
+        `SELECT
+           COALESCE(SUM(COALESCE(ip.preco_unitario, p.preco) * ip.quantidade), 0) AS faturamento,
+           COALESCE(SUM((COALESCE(ip.preco_unitario, p.preco) - COALESCE(p.custo, 0)) * ip.quantidade), 0) AS lucro
          FROM pedidos pe
          JOIN itens_pedido ip ON ip.pedido_id = pe.id
          JOIN produtos p ON p.id = ip.produto_id
          WHERE pe.data_pedido::date = $1::date ${fCond}`,
         [data]
+      ),
+      pool.query(
+        `SELECT
+           COALESCE(SUM(COALESCE(ip.preco_unitario, p.preco) * ip.quantidade), 0) AS total_vendas,
+           COALESCE(SUM((COALESCE(ip.preco_unitario, p.preco) - COALESCE(p.custo, 0)) * ip.quantidade), 0) AS total_lucro
+         FROM pedidos pe
+         JOIN itens_pedido ip ON ip.pedido_id = pe.id
+         JOIN produtos p ON p.id = ip.produto_id
+         WHERE 1=1 ${fCond}`,
+        []
       ),
     ]);
 
@@ -372,6 +426,9 @@ app.get("/relatorios", async (req, res) => {
       totalHoje:       totaisRes.rows[0].totalHoje,
       entreguesHoje:   totaisRes.rows[0].entreguesHoje,
       faturamentoHoje: faturamentoRes.rows[0].faturamento,
+      lucroHoje:       faturamentoRes.rows[0].lucro,
+      totalVendas:     geralRes.rows[0].total_vendas,
+      totalLucro:      geralRes.rows[0].total_lucro,
       porFilial:       porFilialRes.rows,
       topProdutos:     topProdutosRes.rows,
     });
