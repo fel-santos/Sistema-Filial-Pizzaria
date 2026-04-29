@@ -1,222 +1,142 @@
-# 🍕 Sistema Filial Pizzaria
+# PizzaSystem — Sistema de Gestão de Filiais
 
-Sistema interno para gerenciamento de pedidos entre filiais de uma pizzaria.
+Sistema web completo para gestão de uma distribuidora de pizzas e suas filiais. O administrador gerencia produtos, filiais e pedidos; cada filial acessa um painel próprio para fazer pedidos e acompanhar status em tempo real.
 
----
+## Funcionalidades
 
-## 🚀 Tecnologias utilizadas
+**Painel Admin**
+- Cadastro, edição, ativação/desativação e exclusão de filiais
+- Gestão de produtos (preço, disponibilidade)
+- Visualização de todos os pedidos com atualização automática (polling 10s)
+- Alteração de status de entrega e status de pagamento por pedido
+- Relatórios por data e por filial: vendas, lucro, produtos mais pedidos
 
-* Frontend: React + Vite
-* Backend: Node.js + Express
-* Banco de Dados: PostgreSQL
+**Painel Filial**
+- Login exclusivo com bloqueio automático se a filial estiver desativada
+- Fazer pedidos com busca de produto em tempo real
+- Acompanhar histórico e status do pedido mais recente (atualização automática)
+- Filtros por status e data nos pedidos
 
----
+**Geral**
+- Autenticação com bcrypt
+- Preço travado no momento do pedido (sem distorção retroativa)
+- Design responsivo (mobile e desktop)
+- Tema escuro / claro
 
-## 📦 Funcionalidades
+## Stack
 
-* Login de usuários (Admin e Filiais)
-* Envio de pedidos
-* Acompanhamento de status
-* Gestão de produtos
-* Gestão de filiais
+| Camada    | Tecnologia                               |
+|-----------|------------------------------------------|
+| Frontend  | React 19, React Router 7, TailwindCSS 4  |
+| Backend   | Node.js, Express 5                       |
+| Banco     | PostgreSQL                               |
+| Build     | Vite 8                                   |
 
----
+## Como rodar localmente
 
-# 🧑‍💻 Como rodar o projeto em outra máquina
+### Pré-requisitos
+- Node.js 18+
+- PostgreSQL 14+
 
-## 🔹 1. Clonar o repositório
+### 1. Banco de dados
 
 ```bash
-git clone https://github.com/fel-santos/Sistema-Filial-Pizzaria.git
-cd Sistema-Filial-Pizzaria
+psql -U postgres -c "CREATE DATABASE dbSistemaFilial;"
+psql -U postgres -d dbSistemaFilial -f database/tabelas.sql
+psql -U postgres -d dbSistemaFilial -f database/migration_v2.sql
 ```
 
----
-
-## 🔹 2. Instalar o PostgreSQL
-
-Baixe e instale o PostgreSQL.
-
-Durante a instalação:
-
-* Defina uma senha para o usuário `postgres`
-* Porta padrão: `5432`
-
----
-
-## 🔹 3. Criar o banco de dados
-
-Abra o pgAdmin ou terminal e execute:
-
-```sql
-CREATE DATABASE dbSistemaFilial;
-```
-
----
-
-## 🔹 4. Criar as tabelas
-
-Execute o script SQL abaixo:
-
-```sql
--- FILIAIS
-CREATE TABLE filiais (
-    id SERIAL PRIMARY KEY,
-    nome VARCHAR(100) NOT NULL,
-    endereco TEXT,
-    telefone VARCHAR(20),
-    ativo BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- USUÁRIOS
-CREATE TABLE users (
-    id SERIAL PRIMARY KEY,
-    nome VARCHAR(100) NOT NULL,
-    email VARCHAR(100) UNIQUE NOT NULL,
-    senha TEXT NOT NULL,
-    tipo VARCHAR(20) NOT NULL CHECK (tipo IN ('ADMIN', 'FILIAL')),
-    filial_id INT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (filial_id) REFERENCES filiais(id),
-    CHECK (
-        (tipo = 'ADMIN' AND filial_id IS NULL) OR
-        (tipo = 'FILIAL' AND filial_id IS NOT NULL)
-    )
-);
-
--- PRODUTOS
-CREATE TABLE produtos (
-    id SERIAL PRIMARY KEY,
-    nome VARCHAR(100) NOT NULL,
-    descricao TEXT,
-    preco NUMERIC(10,2),
-    disponivel BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- PEDIDOS
-CREATE TABLE pedidos (
-    id SERIAL PRIMARY KEY,
-    filial_id INT NOT NULL,
-    status VARCHAR(20) DEFAULT 'recebido',
-    data_pedido TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    created_by INT,
-    FOREIGN KEY (filial_id) REFERENCES filiais(id),
-    FOREIGN KEY (created_by) REFERENCES users(id)
-);
-
--- ITENS DO PEDIDO
-CREATE TABLE itens_pedido (
-    id SERIAL PRIMARY KEY,
-    pedido_id INT NOT NULL,
-    produto_id INT NOT NULL,
-    quantidade INT NOT NULL,
-    FOREIGN KEY (pedido_id) REFERENCES pedidos(id),
-    FOREIGN KEY (produto_id) REFERENCES produtos(id)
-);
-```
-
----
-
-## 🔹 5. Criar usuário administrador
-
-```sql
-INSERT INTO users (nome, email, senha, tipo)
-VALUES ('Admin', 'admin@px.com', 'pxPizarria@123', 'ADMIN');
-```
-
----
-
-## 🔹 6. Configurar o backend
-
-Acesse a pasta:
+### 2. Backend
 
 ```bash
 cd backend
-```
-
-Instale as dependências:
-
-```bash
+cp .env.example .env
+# Edite o .env com suas credenciais do PostgreSQL
 npm install
+node setup.js   # Cria admin e produtos iniciais (execute uma vez)
+npm run dev     # Inicia em modo desenvolvimento
 ```
 
-Crie um arquivo `.env`:
-
-```env
-DB_USER=postgres
-DB_HOST=localhost
-DB_NAME=dbSistemaFilial
-DB_PASSWORD=SUA_SENHA_AQUI
-DB_PORT=5432
-```
-
----
-
-## 🔹 7. Rodar o backend
-
-```bash
-node server.js
-```
-
-Deve aparecer:
-
-```
-Servidor rodando na porta 3000 🚀
-```
-
----
-
-## 🔹 8. Rodar o frontend
-
-Abra outro terminal:
+### 3. Frontend
 
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run dev     # Disponível em http://localhost:5173
 ```
 
----
+### Credenciais padrão (após rodar setup.js)
 
-## 🔹 9. Acessar o sistema
+| Tipo  | Email           | Senha    |
+|-------|-----------------|----------|
+| Admin | admin@pizza.com | admin123 |
 
-Abra no navegador:
+> Para criar um usuário de filial, acesse o painel admin → Filiais → Nova Filial.
 
-```
-http://localhost:5173
-```
+## Deploy (Hostinger VPS)
 
----
+### 1. Build do frontend
 
-## 🔐 Login padrão
-
-```
-Email: admin@px.com
-Senha: pxPizarria@123
+```bash
+cd frontend
+npm run build   # Gera frontend/dist/
 ```
 
----
+### 2. Variáveis de ambiente no servidor
 
-# 📌 Observações
+Crie o arquivo `backend/.env` com:
 
-* O sistema ainda está em desenvolvimento
-* Senhas ainda não estão criptografadas (será implementado futuramente)
-* Backend roda na porta 3000
-* Frontend roda na porta 5173
+```env
+NODE_ENV=production
+PORT=3000
+DB_USER=...
+DB_HOST=...
+DB_NAME=...
+DB_PASSWORD=...
+DB_PORT=5432
+CORS_ORIGIN=https://seudominio.com
+```
 
----
+### 3. Iniciar o backend
 
-# 🚀 Próximos passos
+```bash
+cd backend
+npm install --omit=dev
+npm start
+```
 
-* Criptografia de senha (bcrypt)
-* Autenticação com JWT
-* Dashboard completo
-* Sistema de pedidos em tempo real
+Em produção, o Express serve o frontend buildado em `frontend/dist/` automaticamente — um único processo, uma única porta.
 
----
+### 4. Nginx (proxy reverso recomendado)
 
-# 👨‍💻 Autor
+```nginx
+server {
+    listen 80;
+    server_name seudominio.com;
 
-Projeto desenvolvido por Felipe Santos 🚀
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+## API — Endpoints principais
+
+| Método | Rota                       | Descrição                         |
+|--------|----------------------------|-----------------------------------|
+| POST   | /api/login                 | Autenticação                      |
+| GET    | /api/produtos              | Listar produtos                   |
+| POST   | /api/produtos              | Criar produto                     |
+| PATCH  | /api/produtos/:id          | Atualizar preço / disponibilidade |
+| GET    | /api/filiais               | Listar filiais                    |
+| POST   | /api/filiais               | Criar filial + usuário de acesso  |
+| PATCH  | /api/filiais/:id           | Editar / ativar / desativar       |
+| GET    | /api/pedidos               | Listar pedidos (com filtros)      |
+| POST   | /api/pedidos               | Criar pedido                      |
+| PATCH  | /api/pedidos/:id/status    | Atualizar status de entrega       |
+| PATCH  | /api/pedidos/:id/pagamento | Marcar como Pago / Pendente       |
+| GET    | /api/relatorios            | Relatório por data e filial       |
+

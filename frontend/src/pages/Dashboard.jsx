@@ -658,10 +658,9 @@ function Produtos() {
   const [produtos, setProdutos]           = useState([]);
   const [loading, setLoading]             = useState(true);
   const [mostrarForm, setMostrarForm]     = useState(false);
-  const [form, setForm]                   = useState({ nome: "", custo: "", margem: "0" });
+  const [form, setForm]                   = useState({ nome: "", preco: "" });
   const [editandoPreco, setEditandoPreco] = useState(null);
-  const [editCusto, setEditCusto]         = useState("");
-  const [editMargem, setEditMargem]       = useState("");
+  const [novoPreco, setNovoPreco]         = useState("");
   const [confirm, setConfirm]             = useState(null);
   const [erro, setErro]                   = useState("");
   const [sucesso, setSucesso]             = useState("");
@@ -677,25 +676,18 @@ function Produtos() {
       .catch(() => { setErro("Erro ao carregar produtos."); setLoading(false); });
   }, []);
 
-  const precoPreview = (c, m) => {
-    const cv = parseFloat(c);
-    const mv = parseFloat(m) || 0;
-    if (!cv || isNaN(cv)) return null;
-    return (cv * (1 + mv / 100)).toFixed(2);
-  };
-
   const adicionar = async () => {
-    if (!form.nome || !form.custo) { setErro("Nome e custo são obrigatórios."); return; }
+    if (!form.nome || !form.preco) { setErro("Nome e preço são obrigatórios."); return; }
     setErro("");
     try {
       const res = await fetch("/api/produtos", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nome: form.nome, custo: parseFloat(form.custo), margem: parseFloat(form.margem) || 0 }),
+        body: JSON.stringify({ nome: form.nome, preco: parseFloat(form.preco) }),
       });
       if (!res.ok) throw new Error();
       const novo = await res.json();
       setProdutos((prev) => [...prev, novo]);
-      setForm({ nome: "", custo: "", margem: "0" }); setMostrarForm(false);
+      setForm({ nome: "", preco: "" }); setMostrarForm(false);
       flash(setSucesso, "Produto criado!");
     } catch { setErro("Erro ao criar produto."); }
   };
@@ -705,11 +697,10 @@ function Produtos() {
     try {
       const res = await fetch(`/api/produtos/${id}`, {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ custo: parseFloat(editCusto), margem: parseFloat(editMargem) || 0 }),
+        body: JSON.stringify({ preco: parseFloat(novoPreco) }),
       });
       if (!res.ok) throw new Error();
-      const atualizado = await res.json();
-      setProdutos((prev) => prev.map((p) => p.id === id ? atualizado : p));
+      setProdutos((prev) => prev.map((p) => p.id === id ? { ...p, preco: parseFloat(novoPreco) } : p));
       setEditandoPreco(null);
       flash(setSucesso, "Preço atualizado!");
     } catch { setErro("Erro ao atualizar preço."); }
@@ -782,16 +773,9 @@ function Produtos() {
           <div className="flex flex-col sm:flex-row gap-3">
             <input placeholder="Nome do produto" value={form.nome}
               onChange={(e) => setForm({ ...form, nome: e.target.value })} className={INPUT_BASE + " flex-1"} />
-            <input placeholder="Custo (R$)" type="number" min="0" step="0.01" value={form.custo}
-              onChange={(e) => setForm({ ...form, custo: e.target.value })} className={INPUT_BASE + " w-full sm:w-32"} />
-            <input placeholder="Margem (%)" type="number" min="0" step="0.1" value={form.margem}
-              onChange={(e) => setForm({ ...form, margem: e.target.value })} className={INPUT_BASE + " w-full sm:w-32"} />
+            <input placeholder="Preço (R$)" type="number" min="0" step="0.01" value={form.preco}
+              onChange={(e) => setForm({ ...form, preco: e.target.value })} className={INPUT_BASE + " w-full sm:w-36"} />
           </div>
-          {precoPreview(form.custo, form.margem) && (
-            <p className="text-zinc-400 text-sm">
-              Preço para a filial: <span className="text-orange-400 font-semibold">R$ {precoPreview(form.custo, form.margem)}</span>
-            </p>
-          )}
           <div className="flex gap-2 flex-wrap">
             <button onClick={adicionar} className={BTN_PRIMARY}>Salvar</button>
             <button onClick={() => setMostrarForm(false)} className={BTN_SECONDARY}>Cancelar</button>
@@ -806,11 +790,7 @@ function Produtos() {
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-zinc-100 font-semibold truncate">{p.nome}</p>
-                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
-                    <span className="text-zinc-500 text-xs">Custo: <span className="text-zinc-300">R$ {Number(p.custo ?? 0).toFixed(2)}</span></span>
-                    <span className="text-zinc-500 text-xs">Margem: <span className="text-zinc-300">{Number(p.margem ?? 0).toFixed(1)}%</span></span>
-                  </div>
-                  <p className="text-orange-400 font-semibold mt-1">Preço: R$ {Number(p.preco ?? 0).toFixed(2)}</p>
+                  <p className="text-orange-400 font-semibold mt-0.5">R$ {Number(p.preco).toFixed(2)}</p>
                 </div>
                 <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium shrink-0 ${p.disponivel ? "bg-green-900 text-green-300" : "bg-red-900 text-red-300"}`}>
                   {p.disponivel ? "Disponível" : "Indisponível"}
@@ -818,25 +798,15 @@ function Produtos() {
               </div>
 
               {editandoPreco === p.id ? (
-                <div className="flex flex-col gap-2">
-                  <div className="flex gap-2">
-                    <input type="number" placeholder="Custo (R$)" value={editCusto}
-                      onChange={(e) => setEditCusto(e.target.value)} className={INPUT_BASE + " flex-1"} />
-                    <input type="number" placeholder="Margem (%)" value={editMargem}
-                      onChange={(e) => setEditMargem(e.target.value)} className={INPUT_BASE + " w-24"} />
-                  </div>
-                  {precoPreview(editCusto, editMargem) && (
-                    <p className="text-zinc-400 text-xs">Novo preço: <span className="text-orange-400 font-semibold">R$ {precoPreview(editCusto, editMargem)}</span></p>
-                  )}
-                  <div className="flex gap-2">
-                    <button onClick={() => salvarPreco(p.id)} className={BTN_PRIMARY + " flex-1"}>Salvar</button>
-                    <button onClick={() => setEditandoPreco(null)} className={BTN_SECONDARY}>✕</button>
-                  </div>
+                <div className="flex gap-2">
+                  <input type="number" defaultValue={p.preco} onChange={(e) => setNovoPreco(e.target.value)}
+                    className={INPUT_BASE + " flex-1"} />
+                  <button onClick={() => salvarPreco(p.id)} className={BTN_PRIMARY + " shrink-0"}>OK</button>
                 </div>
               ) : (
-                <button onClick={() => { setEditandoPreco(p.id); setEditCusto(p.custo ?? ""); setEditMargem(p.margem ?? "0"); }}
+                <button onClick={() => { setEditandoPreco(p.id); setNovoPreco(p.preco); }}
                   className="text-zinc-500 hover:text-zinc-300 text-xs text-left transition cursor-pointer">
-                  ✏️ Editar custo/margem
+                  ✏️ Editar preço
                 </button>
               )}
 

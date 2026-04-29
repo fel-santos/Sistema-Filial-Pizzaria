@@ -3,33 +3,38 @@ import cors from "cors";
 import pkg from "pg";
 import bcrypt from "bcrypt";
 import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
 
 dotenv.config();
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+
 const { Pool } = pkg;
-const app = express();
-app.use(cors());
+const app    = express();
+const router = express.Router();
+
+app.use(cors({ origin: process.env.CORS_ORIGIN || "*", credentials: true }));
 app.use(express.json());
 
 const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
+  user:     process.env.DB_USER,
+  host:     process.env.DB_HOST,
   database: process.env.DB_NAME,
   password: process.env.DB_PASSWORD,
-  port: process.env.DB_PORT,
+  port:     process.env.DB_PORT,
 });
 
-// Suporta senhas bcrypt e texto puro (legado)
 async function verificarSenha(plain, stored) {
-  if (stored.startsWith("$2b$") || stored.startsWith("$2a$")) {
+  if (stored.startsWith("$2b$") || stored.startsWith("$2a$"))
     return bcrypt.compare(plain, stored);
-  }
   return plain === stored;
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
-app.post("/login", async (req, res) => {
+router.post("/login", async (req, res) => {
   const { email, senha } = req.body;
   try {
     const result = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
@@ -58,7 +63,7 @@ app.post("/login", async (req, res) => {
 
 // ─── Produtos ─────────────────────────────────────────────────────────────────
 
-app.get("/produtos", async (req, res) => {
+router.get("/produtos", async (req, res) => {
   try {
     const result = await pool.query("SELECT * FROM produtos ORDER BY nome");
     res.json(result.rows);
@@ -68,14 +73,12 @@ app.get("/produtos", async (req, res) => {
   }
 });
 
-app.post("/produtos", async (req, res) => {
-  const { nome, descricao, custo, margem } = req.body;
+router.post("/produtos", async (req, res) => {
+  const { nome, preco, descricao } = req.body;
   try {
-    const m     = margem ?? 0;
-    const preco = custo != null ? Math.round(custo * (1 + m / 100) * 100) / 100 : null;
     const result = await pool.query(
-      "INSERT INTO produtos (nome, descricao, custo, margem, preco) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-      [nome, descricao || null, custo ?? null, m, preco]
+      "INSERT INTO produtos (nome, preco, descricao) VALUES ($1, $2, $3) RETURNING *",
+      [nome, preco, descricao || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -84,26 +87,14 @@ app.post("/produtos", async (req, res) => {
   }
 });
 
-app.patch("/produtos/:id", async (req, res) => {
+router.patch("/produtos/:id", async (req, res) => {
   const { id } = req.params;
-  const { disponivel, custo, margem } = req.body;
+  const { preco, disponivel } = req.body;
   try {
     const fields = [];
     const values = [];
     let i = 1;
-
-    if (custo !== undefined || margem !== undefined) {
-      const cur = await pool.query("SELECT custo, margem FROM produtos WHERE id = $1", [id]);
-      const row = cur.rows[0] || {};
-      const c = custo  !== undefined ? custo  : Number(row.custo  ?? 0);
-      const m = margem !== undefined ? margem : Number(row.margem ?? 0);
-      if (custo  !== undefined) { fields.push(`custo  = $${i++}`); values.push(custo); }
-      if (margem !== undefined) { fields.push(`margem = $${i++}`); values.push(margem); }
-      const novoPreco = Math.round(c * (1 + m / 100) * 100) / 100;
-      fields.push(`preco = $${i++}`);
-      values.push(novoPreco);
-    }
-
+    if (preco      !== undefined) { fields.push(`preco = $${i++}`);      values.push(preco); }
     if (disponivel !== undefined) { fields.push(`disponivel = $${i++}`); values.push(disponivel); }
     if (!fields.length) return res.status(400).json({ error: "Nenhum campo para atualizar" });
     values.push(id);
@@ -118,12 +109,11 @@ app.patch("/produtos/:id", async (req, res) => {
   }
 });
 
-app.delete("/produtos/:id", async (req, res) => {
+router.delete("/produtos/:id", async (req, res) => {
   const { id } = req.params;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    // Remove das ordens antes de deletar o produto
     await client.query("DELETE FROM itens_pedido WHERE produto_id = $1", [id]);
     await client.query("DELETE FROM produtos WHERE id = $1", [id]);
     await client.query("COMMIT");
@@ -139,7 +129,7 @@ app.delete("/produtos/:id", async (req, res) => {
 
 // ─── Filiais ──────────────────────────────────────────────────────────────────
 
-app.get("/filiais", async (req, res) => {
+router.get("/filiais", async (req, res) => {
   try {
     const result = await pool.query(
       "SELECT id, nome, endereco, telefone, ativo FROM filiais ORDER BY nome"
@@ -151,7 +141,7 @@ app.get("/filiais", async (req, res) => {
   }
 });
 
-app.get("/filiais/:id", async (req, res) => {
+router.get("/filiais/:id", async (req, res) => {
   const { id } = req.params;
   try {
     const result = await pool.query(
@@ -167,7 +157,7 @@ app.get("/filiais/:id", async (req, res) => {
   }
 });
 
-app.post("/filiais", async (req, res) => {
+router.post("/filiais", async (req, res) => {
   const { nome, endereco, telefone, email, senha } = req.body;
   const client = await pool.connect();
   try {
@@ -187,16 +177,15 @@ app.post("/filiais", async (req, res) => {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);
-    if (err.code === "23505") {
+    if (err.code === "23505")
       return res.status(400).json({ error: "Email já cadastrado." });
-    }
     res.status(500).json({ error: "Erro no servidor" });
   } finally {
     client.release();
   }
 });
 
-app.patch("/filiais/:id", async (req, res) => {
+router.patch("/filiais/:id", async (req, res) => {
   const { id } = req.params;
   const { ativo, nome, endereco, telefone } = req.body;
   try {
@@ -220,7 +209,7 @@ app.patch("/filiais/:id", async (req, res) => {
   }
 });
 
-app.delete("/filiais/:id", async (req, res) => {
+router.delete("/filiais/:id", async (req, res) => {
   const { id } = req.params;
   const client = await pool.connect();
   try {
@@ -245,20 +234,19 @@ app.delete("/filiais/:id", async (req, res) => {
 
 // ─── Pedidos ──────────────────────────────────────────────────────────────────
 
-app.get("/pedidos", async (req, res) => {
+router.get("/pedidos", async (req, res) => {
   const { filial_id, status, data_inicio, data_fim } = req.query;
   try {
     const conds  = [];
     const values = [];
     let i = 1;
 
-    if (filial_id)   { conds.push(`pe.filial_id = $${i++}`);                  values.push(filial_id); }
-    if (status)      { conds.push(`pe.status = $${i++}`);                     values.push(status); }
-    if (data_inicio) { conds.push(`pe.data_pedido::date >= $${i++}::date`);   values.push(data_inicio); }
-    if (data_fim)    { conds.push(`pe.data_pedido::date <= $${i++}::date`);   values.push(data_fim); }
+    if (filial_id)   { conds.push(`pe.filial_id = $${i++}`);                values.push(filial_id); }
+    if (status)      { conds.push(`pe.status = $${i++}`);                   values.push(status); }
+    if (data_inicio) { conds.push(`pe.data_pedido::date >= $${i++}::date`); values.push(data_inicio); }
+    if (data_fim)    { conds.push(`pe.data_pedido::date <= $${i++}::date`); values.push(data_fim); }
 
-    const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-
+    const where      = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
     const selectItens = `COALESCE(json_agg(
              json_build_object('nome', p.nome, 'quantidade', ip.quantidade, 'preco', p.preco, 'preco_unitario', ip.preco_unitario)
            ) FILTER (WHERE ip.id IS NOT NULL), '[]') AS itens`;
@@ -295,7 +283,7 @@ app.get("/pedidos", async (req, res) => {
   }
 });
 
-app.post("/pedidos", async (req, res) => {
+router.post("/pedidos", async (req, res) => {
   const { filial_id, created_by, itens } = req.body;
 
   const filialCheck = await pool.query("SELECT ativo FROM filiais WHERE id = $1", [filial_id]);
@@ -311,7 +299,7 @@ app.post("/pedidos", async (req, res) => {
     );
     const pedido = pedidoResult.rows[0];
     for (const item of itens) {
-      const prodRes = await client.query("SELECT preco FROM produtos WHERE id = $1", [item.produto_id]);
+      const prodRes       = await client.query("SELECT preco FROM produtos WHERE id = $1", [item.produto_id]);
       const preco_unitario = prodRes.rows[0]?.preco ?? null;
       await client.query(
         "INSERT INTO itens_pedido (pedido_id, produto_id, quantidade, preco_unitario) VALUES ($1, $2, $3, $4)",
@@ -329,7 +317,7 @@ app.post("/pedidos", async (req, res) => {
   }
 });
 
-app.patch("/pedidos/:id/pagamento", async (req, res) => {
+router.patch("/pedidos/:id/pagamento", async (req, res) => {
   const { id } = req.params;
   const { status_pagamento } = req.body;
   try {
@@ -344,7 +332,7 @@ app.patch("/pedidos/:id/pagamento", async (req, res) => {
   }
 });
 
-app.patch("/pedidos/:id/status", async (req, res) => {
+router.patch("/pedidos/:id/status", async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
   try {
@@ -361,7 +349,7 @@ app.patch("/pedidos/:id/status", async (req, res) => {
 
 // ─── Relatórios ───────────────────────────────────────────────────────────────
 
-app.get("/relatorios", async (req, res) => {
+router.get("/relatorios", async (req, res) => {
   const data     = req.query.data || new Date().toISOString().split("T")[0];
   const filialId = req.query.filial_id ? parseInt(req.query.filial_id) : null;
   const fCond    = filialId ? `AND pe.filial_id = ${filialId}` : "";
@@ -440,7 +428,7 @@ app.get("/relatorios", async (req, res) => {
 
 // ─── Perfil ───────────────────────────────────────────────────────────────────
 
-app.get("/perfil/:id", async (req, res) => {
+router.get("/perfil/:id", async (req, res) => {
   const { id } = req.params;
   try {
     const result = await pool.query(
@@ -456,7 +444,7 @@ app.get("/perfil/:id", async (req, res) => {
   }
 });
 
-app.put("/perfil/:id", async (req, res) => {
+router.put("/perfil/:id", async (req, res) => {
   const { id } = req.params;
   const { nome } = req.body;
   try {
@@ -471,7 +459,7 @@ app.put("/perfil/:id", async (req, res) => {
   }
 });
 
-app.patch("/perfil/:id/senha", async (req, res) => {
+router.patch("/perfil/:id/senha", async (req, res) => {
   const { id } = req.params;
   const { senhaAtual, novaSenha } = req.body;
   try {
@@ -489,6 +477,15 @@ app.patch("/perfil/:id/senha", async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Montar router e servir frontend ──────────────────────────────────────────
 
-app.listen(3000, () => console.log("Servidor rodando na porta 3000 🚀"));
+app.use("/api", router);
+
+if (process.env.NODE_ENV === "production") {
+  const dist = path.join(__dirname, "../frontend/dist");
+  app.use(express.static(dist));
+  app.get("*", (_req, res) => res.sendFile(path.join(dist, "index.html")));
+}
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
